@@ -6,12 +6,16 @@
 
 ### ✅ Completed Phases
 
-- **Phase 0: AWS OIDC Authentication** - Secure GitHub → AWS integration without access keys
+- **Phase 0: AWS OIDC Authentication** ✅ **COMPLETE**
+  - OIDC provider configured (imported existing resource)
+  - Custom least privilege IAM policy (13 permission statements)
+  - IAM role with 1-hour session duration
+  - Tested and verified GitHub Actions → AWS authentication
+  - Successfully demonstrated security boundaries (S3 path restrictions, IAM user creation blocked)
 
 ### 🚧 In Progress
 
-- Implementing least privilege IAM policies
-- Setting up enterprise Terraform structure
+- **Phase 1:** Enterprise Terraform Isolation with AWS (Next Up!)
 
 ### 📋 Upcoming Phases
 
@@ -498,8 +502,8 @@ After completing each phase, you should be able to confidently discuss:
 
 | Phase                 | Status         | Completion Date | Key Achievements                       |
 | --------------------- | -------------- | --------------- | -------------------------------------- |
-| Phase 0: OIDC         | 🚧 In Progress | -               | Implemented least privilege IAM policy |
-| Phase 1: Terraform    | ⏸️ Not Started | -               | -                                      |
+| Phase 0: OIDC         | ✅ Complete    | April 4, 2026   | OIDC auth, least privilege policy, Terraform import, tested & verified |
+| Phase 1: Terraform    | 🚧 In Progress | -               | -                                      |
 | Phase 2: EKS          | ⏸️ Not Started | -               | -                                      |
 | Phase 3: K8s Advanced | ⏸️ Not Started | -               | -                                      |
 | Phase 4: CI/CD        | ⏸️ Not Started | -               | -                                      |
