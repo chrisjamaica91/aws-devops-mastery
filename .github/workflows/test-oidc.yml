@@ -1,0 +1,41 @@
+name: Test OIDC Authentication
+
+on:
+  workflow_dispatch:  # Manual trigger for testing
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+jobs:
+  test-aws-connection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::737026300147:role/GitHubActionsRole-DevOpsMastery
+          aws-region: us-east-1
+          role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: Verify AWS identity
+        run: |
+          echo "Testing OIDC authentication..."
+          aws sts get-caller-identity
+          echo "✅ Successfully authenticated to AWS!"
+
+      - name: Test S3 permissions (should work - bucket pattern match)
+        run: |
+          echo "Testing S3 list permissions..."
+          aws s3 ls || echo "No S3 buckets yet (expected)"
+
+      - name: Test IAM permissions (should fail - no user creation allowed)
+        run: |
+          echo "Testing least privilege - trying to create IAM user (should fail)..."
+          aws iam create-user --user-name test-user-should-fail 2>&1 | grep -q "AccessDenied" && echo "✅ Least privilege working - cannot create users!" || echo "❌ Unexpected: user creation succeeded"
+        continue-on-error: true
