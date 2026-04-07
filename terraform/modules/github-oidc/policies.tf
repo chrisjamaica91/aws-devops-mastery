@@ -43,25 +43,18 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     ]
   }
 
-  # ==========================================
-  # DynamoDB - Terraform State Locking
-  # ==========================================
-  statement {
-    sid    = "TerraformStateLocking"
-    effect = "Allow"
-    actions = [
-      "dynamodb:CreateTable",
-      "dynamodb:DeleteTable",
-      "dynamodb:DescribeTable",
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
-      "dynamodb:DeleteItem",
-      "dynamodb:TagResource"
-    ]
-    resources = [
-      "arn:aws:dynamodb:*:*:table/terraform-lock-*",
-    ]
-  }
+statement {
+  sid    = "TerraformStateLockfileManagement"
+  effect = "Allow"
+  actions = [
+    "s3:GetObject",
+    "s3:PutObject",
+    "s3:DeleteObject"
+  ]
+  resources = [
+    "arn:aws:s3:::*-terraform-state-*/*.tflock"
+  ]
+}
 
   # ==========================================
   # EKS - Kubernetes Cluster Management

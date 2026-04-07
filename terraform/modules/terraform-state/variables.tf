@@ -27,3 +27,8 @@ variable "enable_replication" {
   type        = bool
   default     = false
 }
+variable "enable_dynamodb_locking" {
+  description = "Enable DynamoDB state locking (deprecated - use S3 native locking instead)"
+  type        = bool
+  default     = false
+}

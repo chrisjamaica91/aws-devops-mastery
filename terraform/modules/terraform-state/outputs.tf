@@ -13,13 +13,13 @@ output "s3_bucket_arn" {
 }
 
 output "dynamodb_table_name" {
-  description = "DynamoDB table name for state locking"
-  value       = aws_dynamodb_table.terraform_lock.name
+  description = "DynamoDB table name for state locking (deprecated - use S3 native locking)"
+  value       = try(aws_dynamodb_table.terraform_lock[0].name, null)
 }
 
 output "dynamodb_table_arn" {
-  description = "DynamoDB table ARN"
-  value       = aws_dynamodb_table.terraform_lock.arn
+  description = "DynamoDB table ARN (deprecated - use S3 native locking)"
+  value       = try(aws_dynamodb_table.terraform_lock[0].arn, null)
 }
 
 output "backend_config" {
@@ -29,6 +29,8 @@ output "backend_config" {
     key            = "infrastructure/terraform.tfstate"
     region         = data.aws_region.current.name
     encrypt        = true
-    dynamodb_table = aws_dynamodb_table.terraform_lock.name
+    use_lockfile   = true  # S3 native locking (modern approach)
+    # dynamodb_table is deprecated - only populated if enable_dynamodb_locking = true
+    dynamodb_table = try(aws_dynamodb_table.terraform_lock[0].name, null)
   }
 }
