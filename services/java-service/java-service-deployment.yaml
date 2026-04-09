@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-service
+  namespace: java-service
+  labels:
+    app: java-service
+    tier: backend
+    version: v1.0.0
+  annotations:
+    kubernetes.io/change-cause: "Initial deployment v1.0.0"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: java-service
+  template:
+    metadata:
+      labels:
+        app: java-service
+        tier: backend
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containers:
+      - name: java-service
+        image: 737026300147.dkr.ecr.us-east-2.amazonaws.com/aws-devops-mastery/java-service:v1.0.0
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Higher resources for JVM (vs. Node.js)
+        resources:
+          requests:
+            cpu: 500m        # 0.5 CPU cores (JVM needs more than Node.js)
+            memory: 768Mi    # 768MB (JVM heap + non-heap memory)
+          limits:
+            cpu: 2000m       # Max 2 CPU cores
+            memory: 1536Mi   # Max 1.5GB (prevents OOMKilled)
+        
+        # Liveness probe: Uses Spring Boot Actuator endpoint
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60  # JVM startup is slower than Node.js
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe: Checks if app is ready to serve traffic
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # Security: Read-only root filesystem
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        # Environment variables
+        env:
+        - name: JAVA_OPTS
+          value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0"
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        
+        # Temporary writable directories
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: app-tmp
+          mountPath: /app/tmp
+      
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: app-tmp
+        emptyDir: {}
+      
+      # Topology spread: Distribute across zones
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: java-service
+      
+      # Anti-affinity: Prefer different nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: java-service
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: java-service-pdb
+  namespace: java-service
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: java-service

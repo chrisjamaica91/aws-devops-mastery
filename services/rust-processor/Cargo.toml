@@ -1,0 +1,26 @@
+[package]
+name = "rust-processor"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+# Actix-web: Pin to version that works with stable Rust
+actix-web = "=4.9.0"
+
+# Tokio: Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# Serde: JSON serialization/deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Env_logger: Structured logging
+env_logger = "0.11"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

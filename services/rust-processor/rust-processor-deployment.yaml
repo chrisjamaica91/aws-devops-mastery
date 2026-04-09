@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-processor
+  namespace: rust-processor
+  labels:
+    app: rust-processor
+    tier: processing
+    version: v1.0.0
+  annotations:
+    kubernetes.io/change-cause: "Initial deployment v1.0.0"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: rust-processor
+  template:
+    metadata:
+      labels:
+        app: rust-processor
+        tier: processing
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532  # Distroless nonroot user
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containers:
+      - name: rust-processor
+        image: 737026300147.dkr.ecr.us-east-2.amazonaws.com/aws-devops-mastery/rust-processor:v1.0.0
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        
+        # Ultra-low resources (Rust efficiency!)
+        resources:
+          requests:
+            cpu: 50m         # 0.05 CPU cores (10x less than Java!)
+            memory: 64Mi     # 64MB (12x less than Java!)
+          limits:
+            cpu: 500m        # Max 0.5 CPU cores
+            memory: 128Mi    # Max 128MB
+        
+        # Liveness probe: Fast startup (Rust binary starts in milliseconds)
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5   # Much faster than Java (60s)
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # Readiness probe
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 2   # Binary ready almost instantly
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        
+        # Security: Distroless has no writable filesystem by default
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        # Environment variables
+        env:
+        - name: RUST_LOG
+          value: "info"
+      
+      # Topology spread: Distribute across zones
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: rust-processor
+      
+      # Anti-affinity: Prefer different nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: rust-processor
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rust-processor-pdb
+  namespace: rust-processor
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: rust-processor

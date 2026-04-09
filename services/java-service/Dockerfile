@@ -12,8 +12,11 @@ RUN mvn dependency:go-offline -B
 # Copy source code
 COPY src ./src
 
-# Build the application (creates target/java-service-1.0.0.jar)
+# Build the application (creates target/*.jar)
 RUN mvn clean package -DskipTests -B
+
+# Debug: List target directory contents
+RUN echo "=== Contents of /app/target/ ===" && ls -la /app/target/
 
 # Stage 2: Runtime stage (lightweight JRE, no Maven)
 FROM eclipse-temurin:17-jre-alpine
@@ -23,8 +26,8 @@ RUN addgroup -g 1001 -S spring && adduser -S spring -u 1001
 
 WORKDIR /app
 
-# Copy only the JAR file from builder stage (leaves behind Maven, source code, dependencies)
-COPY --from=builder --chown=spring:spring /app/target/java-service-1.0.0.jar app.jar
+# Copy JAR file - use wildcard to match whatever Maven created
+COPY --from=builder --chown=spring:spring /app/target/*.jar app.jar
 
 # Switch to non-root user
 USER spring

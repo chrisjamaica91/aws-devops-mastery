@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: javascript-api
+  namespace: javascript-api
+  labels:
+    app: javascript-api
+    tier: api
+    version: v1.0.0
+  annotations:
+    kubernetes.io/change-cause: "Initial deployment v1.0.0"
+spec:
+  replicas: 3  # High availability - survives node failures
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Add 1 extra pod during updates
+      maxUnavailable: 0  # Zero downtime deployments
+  selector:
+    matchLabels:
+      app: javascript-api
+  template:
+    metadata:
+      labels:
+        app: javascript-api
+        tier: api
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Security: Run as non-root user
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containers:
+      - name: javascript-api
+        image: 737026300147.dkr.ecr.us-east-2.amazonaws.com/aws-devops-mastery/javascript-api:v1.0.0
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        
+        # Resource requests tell Karpenter what instance size to provision
+        # Resource limits prevent runaway containers
+        resources:
+          requests:
+            cpu: 100m      # 0.1 CPU cores (helps Karpenter bin-pack efficiently)
+            memory: 128Mi  # 128 megabytes
+          limits:
+            cpu: 500m      # Max 0.5 CPU cores
+            memory: 256Mi  # Max 256 megabytes
+        
+        # Liveness probe: Restart container if this fails
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10  # Wait 10s after container starts
+          periodSeconds: 10        # Check every 10 seconds
+          timeoutSeconds: 3        # Fail if no response in 3s
+          failureThreshold: 3      # Restart after 3 consecutive failures
+        
+        # Readiness probe: Don't send traffic if this fails
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        
+        # Security: Read-only root filesystem (best practice)
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        # Environment variables (example - add as needed)
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+        
+        # Temporary writable directories (needed since root FS is read-only)
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/.npm
+      
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      
+      # Topology spread: Distribute pods across zones
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: javascript-api
+      
+      # Anti-affinity: Prefer different nodes (not required for learning, but production-ready)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: javascript-api
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: javascript-api-pdb
+  namespace: javascript-api
+spec:
+  minAvailable: 2  # Keep at least 2 pods running during disruptions (node drains, evictions)
+  selector:
+    matchLabels:
+      app: javascript-api

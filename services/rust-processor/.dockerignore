@@ -1,0 +1,6 @@
+target/
+Cargo.lock
+.git/
+.gitignore
+.DS_Store
+*.log
