@@ -4,6 +4,11 @@
 
 ## 🎯 Original Mission Statement
 
+> **Project Status:** ⏸️ **PAUSED** (April 28, 2026)  
+> Successfully completed technical interview with Kubernetes expert! Project paused at Phase 5 (ArgoCD Installation) - all preparation work complete, ready to resume at installation step.
+
+> **💰 COST MANAGEMENT:** See [AWS Cost Cleanup Guide](docs/AWS_COST_CLEANUP_GUIDE.md) for commands to identify and delete AWS resources during pause. Estimated running cost: **$176-$222/month**. Paused cost: **$0/month** (after full cleanup).
+
 > **User's Request:** "I want you to aid me in also becoming a top 1% AWS Cloud Engineer. Treat me as if I have very little to no tech experience, however, I do fully understand what you are talking about when explaining tech infrastructure. I'm a novice with following tutorials step by step, so please walk me through them one step at a time and be extremely detailed. I want to aim for senior enterprise production level roles. I want to have a strong grasp of AWS, CI/CD concepts, and industry best practices. Landing a senior AWS Cloud Engineering role is my ultimate goal. Do not make or edit any files for me, unless I tell you too because I need to build the muscle memory for interviews and thoroughly learn the concepts. Also please feel free to give more ways to expand each phase of the project to make them even more senior and production/enterprise ready."
 
 **Learning Philosophy:**
@@ -130,25 +135,80 @@
   - **DOES NOT** deploy (ArgoCD handles deployment)
   - Separation of concerns: CI builds artifacts, GitOps deploys them
 
-  **GitOps Repository Structure** 🚧 **PENDING**
-  - Separate `aws-devops-mastery-gitops` repository
-  - Deployment manifests for dev/staging/production environments
-  - CODEOWNERS file for approval gates:
-    - Dev: 1 platform engineer approval
-    - Staging: 1 platform + 1 QA approval
-    - Production: 2 senior/director approvals
-  - Branch protection rules prevent direct pushes
-  - All changes via Pull Request (audit trail)
+  **Policy-as-Code Governance (OPA/Conftest)** ✅ **COMPLETE**
+  - Integrated into terraform plan workflow as automated gatekeeper
+  - **22 governance rules** across 5 policy categories (417 lines of Rego)
+  - Blocks infrastructure changes that violate policies (continue-on-error: false)
+  - Testing: **22/22 tests passing** (validated locally and in CI/CD)
 
-  **ArgoCD Installation** 🚧 **PENDING**
-  - Install ArgoCD v2.10+ via Helm chart
-  - ArgoCD Image Updater for automatic dev deployments
-  - Application definitions for each service
-  - Sync policies:
-    - Dev: Automatic (image updater writes back to Git)
-    - Staging: Manual (PR approval required)
-    - Production: Manual + approval gates
-  - Rollback via `git revert` (declarative)
+  **Policy Categories:**
+  - **Cost Controls** (4 rules): Instance type restrictions, NAT gateway limits, Spot preference, EBS volume caps
+  - **Security Baseline** (7 rules): S3/RDS encryption, EKS logging, security group 0.0.0.0/0 restrictions, IAM wildcard prevention
+  - **Tagging Requirements** (3 rules): Required tags (Environment/Project/ManagedBy), validation, format enforcement
+  - **Naming Conventions** (5 rules): S3 bucket patterns, EKS cluster suffixes, IAM role prefixes, descriptive security group names
+  - **Region Restrictions** (3 rules): Allowed regions (us-east-1, us-east-2), compliance enforcement, global resource exclusions
+
+  **Implementation:**
+  - Conftest v0.51.0 installed in GitHub Actions runners
+  - Terraform plans converted to JSON for validation
+  - Policy violations displayed in PR comments with clear error messages
+  - Follows FAANG patterns (Netflix/Google approach with namespaced policies)
+  - **BENEFIT**: Prevents costly mistakes before deployment (shift-left governance)
+
+  **Real-World Impact:**
+  - Prevents expensive instance types in dev ($800/month savings)
+  - Blocks unencrypted data stores (#1 cause of breaches)
+  - Enforces tagging for cost allocation and compliance audits
+  - Ensures consistent naming for automated resource discovery
+  - Maintains data residency compliance (GDPR, SOC 2)
+
+  📖 **Detailed implementation guide**: [docs/POLICY_AS_CODE_IMPLEMENTATION.md](docs/POLICY_AS_CODE_IMPLEMENTATION.md)
+
+  **GitOps Repository Structure** ✅ **COMPLETE** (Paused at ArgoCD Installation)
+  - Created separate `aws-devops-mastery-gitops` repository
+  - CODEOWNERS file with approval gates configured:
+    - Dev: 1 platform engineer approval
+    - Staging: 2 approvals (platform + QA)
+    - Production: 2 senior/director approvals
+  - Branch protection rules on main branch
+  - **Kustomize Base Manifests** for java-service:
+    - deployment.yaml: Health probes, resource limits, rolling updates, security context
+    - service.yaml: ClusterIP for internal DNS and load balancing
+    - hpa.yaml: Auto-scaling based on CPU/memory (2-5 replicas)
+    - kustomization.yaml: Base configuration with common labels
+  - **Dev Environment Overlay**:
+    - Lower resources (100m CPU, 256Mi memory for cost savings)
+    - Single replica (HA not needed in dev)
+    - Debug enabled (remote debugging port 5005)
+    - DEBUG log level for troubleshooting
+    - HPA: 1-3 replicas with relaxed thresholds
+  - **ArgoCD Application Manifests**:
+    - Application CRD for java-service-dev
+    - Root application (App of Apps pattern)
+    - Dev project with RBAC and resource quotas
+    - Dev namespace with ResourceQuota and LimitRange
+  - **Documentation**: Comprehensive README in gitops repo explaining GitOps flow
+
+  📁 **GitOps Repository**: https://github.com/chrisjamaica91/aws-devops-mastery-gitops
+
+  **ArgoCD Installation** 🚧 **PAUSED** (Ready to Resume)
+  - Values files created for ArgoCD and Image Updater
+  - HA configuration prepared (2 replicas for server/repo-server)
+  - Metrics and notifications configured
+  - IRSA module created for Image Updater ECR access
+  - **NEXT STEPS**:
+    1. Install ArgoCD v2.10+ via Helm
+    2. Configure GitHub SSO (optional)
+    3. Install ArgoCD Image Updater
+    4. Create Git credentials secret
+    5. Apply IRSA role for ECR access
+    6. Deploy applications via root-app
+
+  **Sync Policies** (Designed, Not Yet Implemented):
+  - Dev: Automatic sync with prune and self-heal
+  - Staging: Manual sync with approval
+  - Production: Manual sync + multi-approval gates
+  - Rollback: Via `git revert` (declarative)
 
   **Branching Strategy:**
   - `develop` branch → Dev environment (automatic deployment)

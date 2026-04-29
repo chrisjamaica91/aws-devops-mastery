@@ -2541,162 +2541,421 @@ docker build -t rust-proc:test ./services/rust-processor
 
 ---
 
-## �️ Phase 5: Environment-Specific Security Scanning
+## 🛡️ Phase 5: Enterprise Infrastructure Security & Multi-Repository Pattern
 
 ### **Learning Outcomes**
 
 After this phase, you can answer:
 
-- "How do you balance security with developer velocity?"
-- "Explain your branch-aware security scanning strategy."
-- "Why don't you run all security scans in every environment?"
-- "How do you integrate security gates into CI/CD without slowing down development?"
+- "Why do you separate application and infrastructure code into different repositories?"
+- "How do you design parallel security scanning workflows for performance?"
+- "Explain your multi-repository OIDC authentication strategy."
+- "How do you prevent infrastructure changes from blocking application deployments?"
+- "What's your branch protection strategy for compliance?"
 
-### **5.1: The Problem with One-Size-Fits-All Scanning**
+### **What You'll Build**
 
-**Scenario:**
+**5.1: Separate Terraform Repository**
+
+- New repository: `aws-devops-mastery-terraform`
+- Contains all infrastructure code (bootstrap, modules, environments)
+- Independent CI/CD pipelines from application code
+- Different approval workflows per environment
+
+**Why Separate?**
+
+```
+Before (Monorepo):
+  aws-devops-mastery/
+  ├── services/           # Apps
+  ├── terraform/          # Infrastructure (MIXED)
+  └── .github/workflows/  # Same CI/CD for both
+
+Problems:
+  ❌ Infrastructure changes trigger app CI/CD
+  ❌ Same approval requirements for apps and infrastructure
+  ❌ Failed infra scans block app deployments
+  ❌ Difficult to enforce environment-specific policies
+
+After (Multi-Repo):
+  aws-devops-mastery/           # Applications
+  aws-devops-mastery-terraform/ # Infrastructure
+  aws-devops-mastery-gitops/    # Deployment manifests (future)
+
+Benefits:
+  ✅ Separate access control (platform team vs developers)
+  ✅ Independent CI/CD (faster feedback)
+  ✅ Environment-specific approvals
+  ✅ Reduced blast radius
+```
+
+**5.2: Multi-Repository OIDC Configuration**
+
+When you create a second repository, the original OIDC trust policy only allows the first repo:
+
+```hcl
+# Before: Single repository
+# terraform/bootstrap/terraform.tfvars
+github_repository = "user/aws-devops-mastery"
+
+# IAM role trust policy (auto-generated)
+{
+  "StringLike": {
+    "token.actions.githubusercontent.com:sub": "repo:user/aws-devops-mastery:*"
+  }
+}
+# Result: New repo gets error "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+```
+
+**Solution:** Update bootstrap to support multiple repositories
+
+```hcl
+# After: Multiple repositories
+# terraform/bootstrap/terraform.tfvars
+github_repositories = [
+  "chrisjamaica91/aws-devops-mastery",
+  "chrisjamaica91/aws-devops-mastery-terraform"
+]
+
+# terraform/modules/github-oidc/roles.tf
+variable "github_repositories" {
+  description = "List of GitHub repositories"
+  type        = list(string)
+}
+
+resource "aws_iam_role" "github_actions" {
+  assume_role_policy = jsonencode({
+    Statement = [{
+      Condition = {
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = [
+            for repo in var.github_repositories : "repo:${repo}:*"
+          ]
+        }
+      }
+    }]
+  })
+}
+```
+
+**Apply the update:**
+
+```bash
+cd terraform/bootstrap
+terraform apply  # Updates IAM role trust policy
+# Result: Both repositories can now authenticate to AWS!
+```
+
+**5.3: Parallel Security Scanning Workflow (dev-plan.yml)**
+
+**Goal:** Fast security feedback on infrastructure PRs (~60-90 seconds vs 2-3 minutes sequential)
+
+**Architecture:**
+
+```
+Pull Request to main (changes to terraform/environments/dev/**)
+        │
+        ▼
+┌───────────────────────────┐
+│   PARALLEL (Jobs 1-3)     │
+│                           │
+│ Job 1: Secrets (gitleaks) │ 5-10s
+│ Job 2: Linting (TFLint)   │ 15-20s
+│ Job 3: Security (tfsec)   │ 20-30s
+└────────┬──────────────────┘
+         │ All must pass ✅
+         ▼
+┌────────────────────────────┐
+│ Job 4: Terraform Plan      │
+│                            │
+│ 1. AWS auth (OIDC)         │
+│ 2. terraform init          │
+│ 3. terraform validate      │
+│ 4. terraform fmt -check    │
+│ 5. terraform plan          │
+│ 6. Infracost (cost est.)   │
+│ 7. Post PR comment         │
+│ 8. Upload plan artifact    │
+└────────────────────────────┘
+         │
+         ▼
+   PR Comment with:
+   • Security scan results
+   • Terraform plan output
+   • Cost estimate (e.g., +$171/month)
+   • Next steps
+```
+
+**Implementation (`dev-plan.yml`):**
 
 ```yaml
-# ❌ Bad: Same scans for all branches
-jobs:
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - run: npm audit # 30 seconds
-      - run: semgrep scan # 2 minutes
-      - run: trivy scan # 3 minutes
-      - run: tfsec . # 1 minute
-      - run: gitleaks detect # 30 seconds
-# Total: 7 minutes EVERY commit
-
-# Problems:
-# - Developers wait 7+ minutes for feature branch feedback
-# - Slows down iteration
-# - Developers bypass CI or batch commits
-# - Security becomes "that slow thing we hate"
-```
-
-**Solution: Environment-Aware Scanning**
-
-```
-Feature Branch (develop):
-  ├── Fast scans only (< 2 minutes total)
-  ├── npm audit (critical vulns only)
-  ├── gitleaks (secrets)
-  └── Basic lint checks
-  → GOAL: Fast feedback for developers
-
-Staging Branch:
-  ├── Comprehensive scans (5-7 minutes)
-  ├── All SAST rules
-  ├── Full dependency scanning
-  ├── Container scanning
-  └── IaC scanning
-  → GOAL: Catch issues before production
-
-Production Branch (main):
-  ├── FULL security suite (10-15 minutes)
-  ├── All scans in parallel
-  ├── Manual security approval
-  ├── Compliance checks
-  └── Generate audit report
-  → GOAL: Maximum security, deployment is infrequent
-```
-
-### **5.2: Implementation Pattern**
-
-```yaml
-# .github/workflows/security-scanning.yml
-name: Security Scanning
+name: Dev Environment - Plan
 
 on:
-  workflow_call: # Reusable workflow
-    inputs:
-      scan-level:
-        required: true
-        type: string # 'fast', 'comprehensive', or 'full'
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/environments/dev/**"
+      - "terraform/modules/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  id-token: write # CRITICAL for OIDC
+
+env:
+  TERRAFORM_DIR: terraform/environments/dev
+  AWS_REGION: us-east-2
 
 jobs:
-  # Job 1: Detect environment from branch
-  detect-environment:
-    runs-on: ubuntu-latest
-    outputs:
-      scan-level: ${{ steps.determine.outputs.level }}
-      run-fast: ${{ steps.determine.outputs.run-fast }}
-      run-comprehensive: ${{ steps.determine.outputs.run-comprehensive }}
-      run-full: ${{ steps.determine.outputs.run-full }}
-    steps:
-      - name: Determine scan level
-        id: determine
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main"  ]]; then
-            echo "level=full" >> $GITHUB_OUTPUT
-            echo "run-fast=true" >> $GITHUB_OUTPUT
-            echo "run-comprehensive=true" >> $GITHUB_OUTPUT
-            echo "run-full=true" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/staging" ]]; then
-            echo "level=comprehensive" >> $GITHUB_OUTPUT
-            echo "run-fast=true" >> $GITHUB_OUTPUT
-            echo "run-comprehensive=true" >> $GITHUB_OUTPUT
-            echo "run-full=false" >> $GITHUB_OUTPUT
-          else
-            echo "level=fast" >> $GITHUB_OUTPUT
-            echo "run-fast=true" >> $GITHUB_OUTPUT
-            echo "run-comprehensive=false" >> $GITHUB_OUTPUT
-            echo "run-full=false" >> $GITHUB_OUTPUT
-          fi
-
-  # Job 2: Fast scans (ALWAYS run)
-  fast-scans:
-    needs: detect-environment
-    if: needs.detect-environment.outputs.run-fast == 'true'
+  # Job 1: Secrets Detection (runs in parallel)
+  secrets-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # CRITICAL: Full history for gitleaks
 
-      - name: Secret Scanning (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: npm audit (CRITICAL only)
-        working-directory: services/javascript-api
-        run: npm audit --audit-level=critical
-
-      - name: Quick lint checks
-        run: |
-          npm run lint
-          cargo clippy --all-targets -- -D warnings
-
-  # Job 3: Comprehensive scans (staging + production)
-  comprehensive-scans:
-    needs: detect-environment
-    if: needs.detect-environment.outputs.run-comprehensive == 'true'
+  # Job 2: Terraform Linting (runs in parallel)
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: SAST with Semgrep
-        uses: returntocorp/semgrep-action@v1
+      - uses: actions/checkout@v4
         with:
-          config: p/security-audit p/owasp-top-ten
+          fetch-depth: 0
 
-      - name: Full npm audit
-        working-directory: services/javascript-api
-        run: npm audit
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
 
-      - name: OWASP Dependency Check (Java)
-        working-directory: services/java-service
-        run: mvn org.owasp:dependency-check-maven:check
+      - run: terraform init
+        working-directory: ${{ env.TERRAFORM_DIR }}
 
-      - name: cargo audit (Rust)
-        working-directory: services/rust-processor
-        run: cargo audit
+      - uses: terraform-linters/setup-tflint@v4
 
-      - name: IaC Scanning (Terraform)
-        run: |
-          tfsec terraform/ --format json --out tfsec-results.json
-          checkov -d terraform/ --output json > checkov-results.json
+      - run: tflint --init && tflint
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+  # Job 3: Security Scanning (runs in parallel)
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - run: terraform init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+      - uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: ${{ env.TERRAFORM_DIR }}
+          minimum-severity: MEDIUM
+
+  # Job 4: Plan (waits for jobs 1-3 to pass)
+  terraform-plan:
+    needs: [secrets-scan, lint, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::737026300147:role/GitHubActionsRole-DevOpsMastery
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: terraform init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+      - run: terraform validate
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+      - run: terraform fmt -check -recursive
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+      - id: plan
+        run: terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        continue-on-error: true
+
+      - uses: infracost/actions/setup@v3
+        if: steps.plan.outcome == 'success'
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+      - run: infracost breakdown --path tfplan --format json --out-file infracost.json
+        if: steps.plan.outcome == 'success'
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+      - uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            // Post comprehensive PR comment with:
+            // - Security scan results from jobs 1-3
+            // - Terraform plan output
+            // - Cost estimate from Infracost
+            // - Next steps for reviewer
+
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outcome == 'success'
+        with:
+          name: dev-tfplan
+          path: terraform/environments/dev/tfplan
+          retention-days: 30
+```
+
+**Key Features:**
+
+- ✅ **Parallel execution:** Jobs 1-3 run simultaneously (40% time savings)
+- ✅ **Early failure:** If secrets found, other jobs cancelled immediately
+- ✅ **Full git history:** `fetch-depth: 0` prevents gitleaks errors
+- ✅ **Cost visibility:** Infracost shows $$ impact BEFORE deploying
+- ✅ **Comprehensive feedback:** One PR comment with all results
+- ✅ **Artifact storage:** tfplan saved for apply workflow
+
+**5.4: Branch Protection Rules**
+
+**Configuration (Settings → Branches → Add rule):**
+
+```
+Branch name pattern: main
+
+✅ Require pull request before merging
+  ✅ Require approvals: 1
+  ✅ Dismiss stale approvals when new commits pushed
+
+✅ Require status checks to pass before merging
+  ✅ Require branches to be up to date
+  Required checks:
+    - 🔐 Detect Secrets
+    - 🔍 Lint Terraform
+    - 🛡️ Security Scan
+    - 📋 Plan Infrastructure Changes
+
+✅ Require conversation resolution before merging
+
+✅ Do not allow bypassing the above settings
+
+✅ Include administrators
+```
+
+**What This Prevents:**
+
+- ❌ Direct pushes to main (all changes via PR)
+- ❌ Merging without security scans passing
+- ❌ Merging with unresolved PR comments
+- ❌ Bypassing rules (even admins follow the process)
+
+**5.5: CODEOWNERS for Environment-Specific Approvals**
+
+```
+# .github/CODEOWNERS
+
+# All infrastructure changes require platform team review
+* @platform-team
+
+# Staging requires platform leads
+/terraform/environments/staging/** @platform-leads
+
+# Production requires 2 approvals: platform-leads + engineering-directors
+/terraform/environments/production/** @platform-leads @engineering-directors
+
+# Bootstrap changes require 2 senior engineers (state is critical!)
+/terraform/bootstrap/** @senior-platform-engineers
+```
+
+### **Environment-Specific Scanning Strategy (Next Steps)**
+
+| Environment    | Workflow                 | Scans                                       | Duration   | Approvals |
+| -------------- | ------------------------ | ------------------------------------------- | ---------- | --------- |
+| **Dev**        | `dev-plan.yml` ✅        | gitleaks, TFLint, tfsec, Infracost          | ~60-90 sec | 0-1       |
+| **Staging**    | `staging-plan.yml` 🚧    | Dev scans + Checkov (CIS), Terrascan        | ~4-6 min   | 1-2       |
+| **Production** | `production-plan.yml` 🚧 | All scans + full Checkov (PCI, HIPAA, SOC2) | ~10-15 min | 2+        |
+
+**Workflow Evolution:**
+
+```bash
+# Week 1-2: Dev environment (COMPLETE ✅)
+dev-plan.yml     # Fast security feedback
+dev-apply.yml    # Auto-deploy after merge
+
+# Week 3: Staging environment (PENDING)
+staging-plan.yml   # Comprehensive scans
+staging-apply.yml  # Manual approval required
+
+# Week 4: Production environment (PENDING)
+production-plan.yml   # Full compliance scanning
+production-apply.yml  # 2 approvals + change ticket
+```
+
+### **Common Issues & Solutions**
+
+**Issue 1: "Not authorized to perform sts:AssumeRoleWithWebIdentity"**
+
+```bash
+# Cause: IAM role trust policy doesn't include new repository
+# Fix: Update bootstrap terraform.tfvars with all repos, then apply
+cd terraform/bootstrap
+terraform apply  # Updates trust policy
+```
+
+**Issue 2: "fatal: ambiguous argument (unknown revision)" from gitleaks**
+
+```yaml
+# Cause: Shallow clone (default depth=1)
+# Fix: Add fetch-depth: 0 to checkout step
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0 # Fetch full git history
+```
+
+**Issue 3: "Terraform exited with code 3" (format check fails)**
+
+```bash
+# Cause: .tf files not properly formatted
+# Fix: Run terraform fmt locally
+terraform fmt -recursive
+git add .
+git commit -m "style: fix terraform formatting"
+```
+
+**Issue 4: "Merge button available even though checks failed"**
+
+```bash
+# Cause: Branch protection not configured
+# Fix: Enable branch protection with required status checks
+# Settings → Branches → Add rule (see section 5.4)
+```
+
+**Issue 5: "INFRACOST_API_KEY is not set"**
+
+```bash
+# Cause: Missing GitHub secret
+# Fix Option 1: Add API key (recommended)
+#   1. Sign up at https://dashboard.infracost.io/
+#   2. Get API key
+#   3. Add to GitHub: Settings → Secrets → Actions → New secret
+#      Name: INFRACOST_API_KEY
+
+# Fix Option 2: Make Infracost optional
+# Add conditional to workflow steps:
+if: steps.plan.outcome == 'success' && secrets.INFRACOST_API_KEY != ''
 
   # Job 4: Full scans (production ONLY)
   full-scans:
